@@ -199,7 +199,7 @@ public class ObjectPoolImplTest {
         int threadCount = Runtime.getRuntime().availableProcessors();
         ExecutorService executorService = newFixedThreadPool(threadCount);
         List<Callable<Void>> items = newArrayList();
-        int countOfAddedObjects = 1;
+        int countOfAddedObjects = 20;
         for (int i = 0; i < countOfAddedObjects; i++) {
             final Person person = buildPerson("AA" + i, "BB" + i);
             pool.add(person);
@@ -225,5 +225,77 @@ public class ObjectPoolImplTest {
         assertEquals(0, pool.getObjects().size());
         assertEquals(0, pool.getFreeObjects().size());
         assertEquals(0, pool.getBusyObjects().size());
+    }
+
+
+    @Test
+    public void testRemoveNowAndReleaseWhenObjectAcquired() throws Exception {
+        pool.open();
+        int threadCount = Runtime.getRuntime().availableProcessors();
+        ExecutorService executorService = newFixedThreadPool(threadCount);
+        List<Callable<Void>> items = newArrayList();
+        int countOfAddedObjects = 1;
+        for (int i = 0; i < countOfAddedObjects; i++) {
+            final Person person = buildPerson("AA" + i, "BB" + i);
+            pool.add(person);
+            Callable<Void> acquireTask = new Callable<Void>() {
+                public Void call() throws InterruptedException {
+                    Person resource = pool.acquire();
+                    new Thread(new Runnable() {
+                        public void run() {
+                            pool.removeNow(person);
+                        }
+                    }).start();
+                    Thread.sleep(2000);
+                    pool.release(resource);
+                    return null;
+                }
+            };
+            items.add(acquireTask);
+        }
+        List<Future<Void>> futures = executorService.invokeAll(items);
+        for (Future<Void> future : futures) {
+            future.get();
+        }
+        assertEquals(0, pool.getObjects().size());
+        assertEquals(0, pool.getFreeObjects().size());
+        assertEquals(0, pool.getBusyObjects().size());
+    }
+
+    @Test
+    public void tesCloseWhenObjectAcquired() throws Exception {
+        pool.open();
+        int threadCount = Runtime.getRuntime().availableProcessors();
+        ExecutorService executorService = newFixedThreadPool(threadCount);
+        List<Callable<Void>> items = newArrayList();
+        int countOfAddedObjects = 1;
+        for (int i = 0; i < countOfAddedObjects; i++) {
+            final Person person = buildPerson("AA" + i, "BB" + i);
+            pool.add(person);
+            Callable<Void> acquireTask = new Callable<Void>() {
+                public Void call() throws InterruptedException {
+                    Person resource = pool.acquire();
+                    new Thread(new Runnable() {
+                        public void run() {
+                            pool.close();
+                        }
+                    }).start();
+                    Thread.sleep(2000);
+                    pool.release(resource);
+                    return null;
+                }
+            };
+            items.add(acquireTask);
+        }
+        List<Future<Void>> futures = executorService.invokeAll(items);
+        for (Future<Void> future : futures) {
+            future.get();
+        }
+        assertFalse(pool.isOpen());
+        pool.open();
+        assertEquals(1, pool.getObjects().size());
+        assertEquals(1, pool.getFreeObjects().size());
+        assertEquals(0, pool.getBusyObjects().size());
+
     }
 }

@@ -19,7 +19,11 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
     private ArrayBlockingQueue<T> freeObjects;
 
+    private ArrayBlockingQueue<T> noBusyObjectsQueue;
+
     private AtomicBoolean isOpened;
+
+    private AtomicBoolean isWaitingForClose;
 
     private Object busyResourcesMonitor = new Object();
 
@@ -28,7 +32,9 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         objects = new CopyOnWriteArraySet<T>();
         busyObjects = new ConcurrentHashMap<T, ArrayBlockingQueue<T>>();
         freeObjects = new ArrayBlockingQueue<T>(maxPoolSize, true);
+        noBusyObjectsQueue = new ArrayBlockingQueue<T>(1, true);
         isOpened = new AtomicBoolean(false);
+        isWaitingForClose = new AtomicBoolean(false);
     }
 
     private void markResourceAsBusy(T result) {
@@ -49,6 +55,14 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         if (!isOpened.compareAndSet(false, true)) {
             throw new RuntimeException("Pool must be closed");
         }
+        isWaitingForClose = new AtomicBoolean(false);
+        synchronized (busyResourcesMonitor) {
+            busyObjects.clear();
+        }
+        synchronized (this) {
+            freeObjects.clear();
+            freeObjects.addAll(objects);
+        }
     }
 
     public boolean isOpen() {
@@ -56,16 +70,31 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     }
 
     public void close() {
-        //Here must be waiting untill all resources are released
+        int size;
+        synchronized (busyResourcesMonitor){
+            size = busyObjects.size();
+        }
+        if (size > 0) {
+            if (!isWaitingForClose.compareAndSet(false, true)) {
+                throw new RuntimeException("Can not mark flag for waiting");
+            }
+            try {
+                noBusyObjectsQueue.take();
+            } catch (InterruptedException e) {
+                log.error("Error", e);
+            }
+        }
         if (!isOpened.compareAndSet(true, false)) {
             throw new RuntimeException("Pool must be opened");
         }
+
     }
 
     public void closeNow() {
         if (!isOpened.compareAndSet(true, false)) {
             throw new RuntimeException("Pool must be opened");
         }
+
     }
 
     public T acquire() {
@@ -102,14 +131,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
     public void release(T resource) {
         checkPoolIsOpened();
-        ArrayBlockingQueue<T> ts;
-        synchronized (busyResourcesMonitor) {
-            ts = busyObjects.remove(resource);
+        ArrayBlockingQueue<T> ts = removeBusyObject(resource);
+        if (ts != null) {
+            ts.add(resource);
         }
-        if (ts == null) {
-            throw new RuntimeException("Object is not mapped as busy");
-        }
-        ts.add(resource);
         synchronized (this) {
             if (objects.contains(resource)) {
                 freeObjects.add(resource);
@@ -139,15 +164,32 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
                 log.error("Error", e);
             }
         }
+        removeBusyObject(resource);
         synchronized (this) {
-            busyObjects.remove(resource);
             freeObjects.remove(result);
             return objects.remove(result);
         }
     }
 
+    private ArrayBlockingQueue<T> removeBusyObject(T resource) {
+        synchronized (busyResourcesMonitor) {
+            ArrayBlockingQueue<T> blockingQueue = busyObjects.remove(resource);
+            if (busyObjects.size() == 0) {
+                if (isWaitingForClose.get()) {
+                    noBusyObjectsQueue.add(resource);
+                }
+            }
+            return blockingQueue;
+        }
+    }
+
     public boolean removeNow(T resource) {
-        return false;
+        checkPoolIsOpened();
+        removeBusyObject(resource);
+        synchronized (this) {
+            freeObjects.remove(resource);
+            return objects.remove(resource);
+        }
     }
 
     @VisibleForTesting
