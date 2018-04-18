@@ -68,7 +68,7 @@ public class ObjectPoolImplTest {
     @Test
     public void testCloseOnAlreadyClosedPool() {
         expectedException.expect(RuntimeException.class);
-        expectedException.expectMessage("Pool must be opened");
+        expectedException.expectMessage("Can not mark pool as closing");
         pool.open();
         pool.close();
         pool.close();
@@ -296,6 +296,34 @@ public class ObjectPoolImplTest {
         assertEquals(1, pool.getObjects().size());
         assertEquals(1, pool.getFreeObjects().size());
         assertEquals(0, pool.getBusyObjects().size());
+
+    }
+
+
+    @Test
+    public void testAcquireWhenPoolIsClosing() throws Exception {
+        pool.open();
+        int countOfAddedObjects = 2;
+        for (int i = 0; i < countOfAddedObjects; i++) {
+            final Person person = buildPerson("AA" + i, "BB" + i);
+            pool.add(person);
+        }
+        pool.acquire();
+        new Thread(new Runnable() {
+            public void run() {
+                pool.close();
+            }
+        }).start();
+        Thread.sleep(2000);
+        pool.acquire();
+
+        assertEquals(2, pool.getObjects().
+
+                size());
+
+        assertEquals(1, pool.getBusyObjects().
+
+                size());
 
     }
 }

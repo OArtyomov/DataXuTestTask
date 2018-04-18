@@ -23,6 +23,8 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
 
     private AtomicBoolean isOpened;
 
+    private AtomicBoolean isClosing;
+
     private AtomicBoolean isWaitingForClose;
 
     private Object busyResourcesMonitor = new Object();
@@ -34,6 +36,7 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
         freeObjects = new ArrayBlockingQueue<T>(maxPoolSize, true);
         noBusyObjectsQueue = new ArrayBlockingQueue<T>(1, true);
         isOpened = new AtomicBoolean(false);
+        isClosing = new AtomicBoolean(false);
         isWaitingForClose = new AtomicBoolean(false);
     }
 
@@ -56,6 +59,7 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
             throw new RuntimeException("Pool must be closed");
         }
         isWaitingForClose = new AtomicBoolean(false);
+        isClosing = new AtomicBoolean(false);
         synchronized (busyResourcesMonitor) {
             busyObjects.clear();
         }
@@ -70,6 +74,10 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     }
 
     public void close() {
+        if (!isClosing.compareAndSet(false, true)) {
+            throw new RuntimeException("Can not mark pool as closing");
+        }
+
         int size;
         synchronized (busyResourcesMonitor){
             size = busyObjects.size();
@@ -100,9 +108,11 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     public T acquire() {
         checkPoolIsOpened();
         try {
-            T result = freeObjects.take();
-            markResourceAsBusy(result);
-            return result;
+            if (!isClosing.get()) {
+                T result = freeObjects.take();
+                markResourceAsBusy(result);
+                return result;
+            }
         } catch (InterruptedException e) {
             log.error("Error", e);
         }
@@ -143,7 +153,6 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     }
 
     public boolean add(T resource) {
-        checkPoolIsOpened();
         synchronized (this) {
             if (objects.add(resource)) {
                 freeObjects.add(resource);
@@ -154,7 +163,6 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     }
 
     public boolean remove(T resource) {
-        checkPoolIsOpened();
         ArrayBlockingQueue<T> ts = busyObjects.get(resource);
         T result = resource;
         if (ts != null) {
@@ -184,7 +192,6 @@ public class ObjectPoolImpl<T> implements ObjectPool<T> {
     }
 
     public boolean removeNow(T resource) {
-        checkPoolIsOpened();
         removeBusyObject(resource);
         synchronized (this) {
             freeObjects.remove(resource);
